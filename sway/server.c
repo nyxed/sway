@@ -10,6 +10,7 @@
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_alpha_modifier_v1.h>
+#include <wlr/types/wlr_color_management_v1.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_content_type_v1.h>
 #include <wlr/types/wlr_cursor_shape_v1.h>
@@ -18,6 +19,7 @@
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_export_dmabuf_v1.h>
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
+#include <wlr/types/wlr_fixes.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/types/wlr_ext_image_capture_source_v1.h>
 #include <wlr/types/wlr_ext_image_copy_capture_v1.h>
@@ -48,6 +50,7 @@
 #include <wlr/types/wlr_xdg_foreign_v1.h>
 #include <wlr/types/wlr_xdg_foreign_v2.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
+#include <wlr/types/wlr_xdg_toplevel_tag_v1.h>
 #include <xf86drm.h>
 #include "config.h"
 #include "list.h"
@@ -255,6 +258,7 @@ bool server_init(struct sway_server *server) {
 	wl_display_set_global_filter(server->wl_display, filter_global, NULL);
 	wl_display_set_default_max_buffer_size(server->wl_display, 1024 * 1024);
 
+	wlr_fixes_create(server->wl_display, 1);
 	root = root_create(server->wl_display);
 
 	server->backend = wlr_backend_autocreate(server->wl_event_loop, &server->session);
@@ -438,10 +442,44 @@ bool server_init(struct sway_server *server) {
 	wl_signal_add(&server->xdg_activation_v1->events.new_token,
 		&server->xdg_activation_v1_new_token);
 
+	struct wlr_xdg_toplevel_tag_manager_v1 *xdg_toplevel_tag_manager_v1 =
+		wlr_xdg_toplevel_tag_manager_v1_create(server->wl_display, 1);
+	server->xdg_toplevel_tag_manager_v1_set_tag.notify =
+		xdg_toplevel_tag_manager_v1_handle_set_tag;
+	wl_signal_add(&xdg_toplevel_tag_manager_v1->events.set_tag,
+		&server->xdg_toplevel_tag_manager_v1_set_tag);
+
 	struct wlr_cursor_shape_manager_v1 *cursor_shape_manager =
 		wlr_cursor_shape_manager_v1_create(server->wl_display, 1);
 	server->request_set_cursor_shape.notify = handle_request_set_cursor_shape;
 	wl_signal_add(&cursor_shape_manager->events.request_set_shape, &server->request_set_cursor_shape);
+
+	if (server->renderer->features.input_color_transform) {
+		const enum wp_color_manager_v1_render_intent render_intents[] = {
+			WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL,
+		};
+		const enum wp_color_manager_v1_transfer_function transfer_functions[] = {
+			WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB,
+			WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ,
+			WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR,
+		};
+		const enum wp_color_manager_v1_primaries primaries[] = {
+			WP_COLOR_MANAGER_V1_PRIMARIES_SRGB,
+			WP_COLOR_MANAGER_V1_PRIMARIES_BT2020,
+		};
+		wlr_color_manager_v1_create(server->wl_display, 1, &(struct wlr_color_manager_v1_options){
+			.features = {
+				.parametric = true,
+				.set_mastering_display_primaries = true,
+			},
+			.render_intents = render_intents,
+			.render_intents_len = sizeof(render_intents) / sizeof(render_intents[0]),
+			.transfer_functions = transfer_functions,
+			.transfer_functions_len = sizeof(transfer_functions) / sizeof(transfer_functions[0]),
+			.primaries = primaries,
+			.primaries_len = sizeof(primaries) / sizeof(primaries[0]),
+		});
+	}
 
 	wl_list_init(&server->pending_launcher_ctxs);
 
@@ -508,6 +546,7 @@ void server_fini(struct sway_server *server) {
 	wl_list_remove(&server->tearing_control_new_object.link);
 	wl_list_remove(&server->xdg_activation_v1_request_activate.link);
 	wl_list_remove(&server->xdg_activation_v1_new_token.link);
+	wl_list_remove(&server->xdg_toplevel_tag_manager_v1_set_tag.link);
 	wl_list_remove(&server->request_set_cursor_shape.link);
 	wl_list_remove(&server->new_foreign_toplevel_capture_request.link);
 	input_manager_finish(server->input);
